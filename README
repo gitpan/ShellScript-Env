@@ -1,0 +1,37 @@
+This is a program that allows one to create simple Bourne and C Shell
+that set environmental labels.  The program:
+
+#/usr/local/bin
+use Env::paths;
+my $local = new Env::paths("/usr/local/opt/egcs");
+$local->add('PATH', 'bin', '$PATH');
+$local->add('MANPATH', 'man', '$MANPATH');
+$local->add('INFOPATH', 'info', '$INFOPATH');
+# AIX uses LIBPATH, not LD_LIBRARY_PATH, weird.
+$local->add('LIBPATH', 'lib', '$LIBPATH');
+$local->save();
+
+When run would create two files, /usr/local/opt/egcs.sh:
+
+PATH=/usr/local/opt/egcs/bin:$PATH
+MANPATH=/usr/local/opt/egcs/man:$MANPATH
+LIBPATH=/usr/local/opt/egcs/lib:$LIBPATH
+INFOPATH=/usr/local/opt/egcs/info:$INFOPATH
+export PATH MANPATH LIBPATH INFOPATH
+
+and the file /usr/local/opt/egcs.csh:
+
+set path = (/usr/local/opt/egcs/bin $path)
+setenv MANPATH /usr/local/opt/egcs/man:$MANPATH
+setenv LIBPATH /usr/local/opt/egcs/lib:$LIBPATH
+setenv INFOPATH /usr/local/opt/egcs/info:$INFOPATH
+
+To install:
+
+	$ perl Makefile.PL
+	$ make
+	$ make install
+
+sorry, no make test yet.
+
+Please e-mail comments.  Sven Heinicke <sven@zen.org>

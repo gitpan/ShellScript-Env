@@ -1,0 +1,5 @@
+MANIFEST
+README
+Makefile.PL
+lib/ShellScript/Env.pm
+lib/ShellScript/Env_auxiliary.pm
