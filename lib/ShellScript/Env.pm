@@ -1,7 +1,8 @@
 package ShellScript::Env;
 
 use strict;
-use ShellScript::Env_auxiliary;
+
+use File::Find;
 
 sub new {
   my $this = shift;
@@ -15,97 +16,272 @@ sub new {
     $self->{'prefix'} = '.';
   }
 
+  %{$self->{'dir_search'}} = 
+      (
+       'LD_LIBRARY_PATH' => ['lib'],
+       'PATH' => ['bin'],
+       'MANPATH' => ['man'],
+       'INFOPATH' => ['info'],
+       );
+
+  push @{$self->{'skip_dirs'}}, 'src';
+
   return $self;
 }
 
+
+#######################
+# Functions to be considered public
 
-sub static {
+# Functions that searches the prefix directory for common path names.
+sub automatic {
+    my $self = shift;
+
+    foreach my $env (keys %{$self->{'dir_search'}}) {
+	my @found = $self->dir_find(@{$self->{'dir_search'}->{$env}});
+	if ($#{@found} >= 0) {
+	    $self->set_path($env, @found, "\$$env");
+	}
+    }
+    
+    return $self;
+}
+
+
+# Just sets a list, no processing or notten.
+sub set {
   my $self = shift;
-  my $variable = shift;
+  my $env = shift;
+
+  @{$self->{'env'}->{$env}} = @_;
+  $self->{'utok'}->{$env} = 0;
+  push @{$self->{'order'}}, $env;
   
-  my $temp = new ShellScript::Env_auxiliary($variable, @_);
-  $temp->{'utok'} = 0;
-
-  push @{$self->{'variables'}}, $temp;
-
   return $self;
 }
 
-
-# prefix the first argument with what ever is in $self->{'prefix'}.
-sub prefix {
+# Make a list and check it twice.  Well, appends $self->{'prefix'} if
+# needed and check if you want utok.
+sub set_path {
   my $self = shift;
-  my $path = shift;
+  my $env = shift;
+  my @dirs = @_;
 
-  if ($path =~ m/^[\/\$]/) {
-    return $path;
-  } else {
-    return "$self->{prefix}/$path";
+  for (@dirs) {
+      my $prefix = quotemeta($self->{'prefix'});
+      if (($_ !~ m/^$prefix/) && ($_ =~ m:^[^\$\/]:)) {
+	s:^:$self->{'prefix'}/:;
+      }
   }
-}
-
-sub add {
-  my $self = shift;
-  my $variable = shift;
-
-  push @{$self->{'variables'}}, new ShellScript::Env_auxiliary($variable, map($self->prefix($_), @_));
+  $self->set($env, @dirs);
+  $self->{'utok'}->{$env} = ($ShellScript::Env::utok || 0);
 
   return $self;
 }
 
+# deletes a variable.
+sub unset {
+  my $self = shift;
+  my $env = shift;
+
+  # Remove one element from a list.  Isn't there a cool way to do this
+  # with map?
+  my @rebuild;
+  for (@{$self->{'order'}}) {
+    if ($_ ne $env) {
+      push @rebuild, $_;
+    }
+  }
+  @{$self->{'order'}} = @rebuild;
+
+  delete $self->{'env'}->{$env};
+  delete $self->{'utok'}->{$env};
+
+  return $self;
+}
+
+# Returns 0 if there are no errors.
 sub save {
   my $self = shift;
-  my $file = shift;
 
-  if (!defined $file) {
-    $file = $self->{'prefix'};
-  } else {
-    $file = $self->prefix($file);
-  }
+  my $error = 0;
 
-  if (open(CSH, ">${file}.csh")) {
+  my $csh_file = "$self->{prefix}.csh";
+  if (open(CSH, ">$csh_file")) {
+    print "Writing $csh_file\n";
     print CSH $self->csh();
     close(CSH);
+  } else {
+    ++$error;
+    warn "Can't write $csh_file: $!";
   }
 
-  if (open(SH, ">${file}.sh")) {
+  my $sh_file = "$self->{prefix}sh";
+  if (open(SH, ">$sh_file")) {
+    print "Writing $sh_file.\n";
     print SH $self->sh();
     close(SH);
+  } else {
+    ++$error;
+    warn "Can't write $sh_file: $!";
   }
 
-  return $self;
+  return $error;
 }
+  
 
-sub csh {
-  my $self = shift;
+
+##################
+# functions to generate shell scripts, these are considered public
+# too.  Are there other common shells that arn't compatible with C or
+# Bourne Shell?
 
-  my $output = '';
-  for (@{$self->{'variables'}}) {
-    $output .= $_->csh();
-  }
-
-  return $output;
-}
-
-
+# output Bourne Shell.
 sub sh {
   my $self = shift;
 
   my $output = '';
-  for (@{$self->{'variables'}}) {
-    $output .= $_->sh();
+  my $export = 'export ';
+
+  for (@{$self->{'order'}}) {
+    $export .= "$_ ";
+
+    if ($self->{'utok'}->{$_}) {
+      $output .= "$_=`utok ";
+    } else {
+      $output .= "$_=";
+    }
+
+
+    for (@{$self->{'env'}->{$_}}) {
+      $output .= "$_:";
+    }
+    
+    if ($self->{'utok'}->{$_}) {
+      $output =~ s/:$/\`\n/;
+    } else {
+      $output =~ s/:$/\n/;
+    }
+
   }
 
-  if (!$ShellScript::Env::sh_export) {
-    $output .= 'export ';
-    for (@{$self->{'variables'}}) {
-      $output .= "$_->{variable} ";
+  if ($export ne 'export ') {
+      $output .= $export;
+  }
+  $output =~ s/\ $/\n/;
+
+  return $output;
+}
+
+# output C Shell.
+sub csh {
+  my $self = shift;
+
+  my $output = '';
+  for (@{$self->{'order'}}) {
+
+    my $delimiter = ':';
+    # I hate how C Shell set every variable one way, and PATH another.
+    # It bugs me to no end.
+    if ($_ eq 'PATH') {
+      $delimiter = ' ';
+      $output .= "set path = (";
+    } else {
+      $output .= "setenv $_ ";
     }
-    $output =~ s/ $/\n/;
+
+    if ($self->{'utok'}->{$_}) {
+      if ($delimiter ne ':') {
+	$output .= "`utok -s '$delimiter' ";
+      } else {
+	$output .= '`utok ';
+      }
+    }
+
+    my $item;
+    foreach $item (@{$self->{'env'}->{$_}}) {
+      if (($_ eq 'PATH') && ($item eq '$PATH')) {
+	$output .= "\$path$delimiter";
+      } else {
+	$output .= "$item$delimiter";
+      }
+    }
+
+    $delimiter = quotemeta($delimiter);
+    if ($self->{'utok'}->{$_}) {
+      $output =~ s/$delimiter$/\`\n/;
+    } else {
+      $output =~ s/$delimiter$/\n/;
+    }
+
+    if ($_ eq 'PATH') {
+      $output =~ s/\n$/\)\n/;
+    }
   }
 
   return $output;
 }
 
+
+#####################
+# Private functions.
+
+# I really wish File::Find's find returned an array.  I also wish it
+# worked while tainted.  oh well.
+sub dir_find {
+  my $self = shift;
+
+  @ShellScript::Env::find = @_;
+  undef @ShellScript::Env::found;
+  @ShellScript::Env::skip = @{$self->{'skip_dirs'}};
+
+  my @output;
+  if (-l $self->{'prefix'}) {
+
+
+    my $newdir = $self->{'prefix'};
+    $newdir =~ s<[^/]*$><>;
+    chdir($newdir);
+
+    my $prefix = readlink($self->{'prefix'});
+    find(\&wanted, $prefix);
+    $prefix = quotemeta($prefix);
+    @output = map(s/^$prefix/$self->{'prefix'}/g && $_,
+		  @ShellScript::Env::found);
+
+  } else {
+    find(\&wanted, $self->{'prefix'});
+    @output = @ShellScript::Env::found;
+  }
+
+  undef @ShellScript::Env::skip;
+  undef @ShellScript::Env::found;
+  undef $ShellScript::Env::find;
+
+  return @output;
+}
+
+# Only used for call to find.
+sub wanted {
+  foreach my $find (@ShellScript::Env::find) {
+    $find = quotemeta($find);
+    if (m/^$find$/ && -d $_) {
+      for (@ShellScript::Env::skip) {
+	my $skip = quotemeta($_);
+	if ($File::Find::name =~ m</$skip/>) {
+	  return 0;
+	}
+      }
+      push @ShellScript::Env::found, $File::Find::name;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+
+
+###################
+# bye, bye.
 return 1;
 

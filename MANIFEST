@@ -2,4 +2,6 @@ MANIFEST
 README
 Makefile.PL
 lib/ShellScript/Env.pm
-lib/ShellScript/Env_auxiliary.pm
+t/generate.t
+t/dir_find.t
+t/lib
